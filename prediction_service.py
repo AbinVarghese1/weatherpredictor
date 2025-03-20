@@ -472,7 +472,7 @@ def main():
             else:
                 print(f"[DEBUG] Prediction cycle completed in {duration:.2f} seconds")
             
-            print(f"[DEBUG] Waiting for 4 hours before next prediction cycle...")
+            print(f"[DEBUG] Waiting for 4 hours before next prediction cycle....")
             time.sleep(4 * 60 * 60)
             
     except KeyboardInterrupt:
