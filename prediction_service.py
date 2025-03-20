@@ -7,6 +7,10 @@ import os
 from supabase import create_client
 import time
 import pytz
+import traceback
+import sys
+
+print("Starting import of modules: SUCCESS")
 
 class WeatherPredictor:
     def __init__(self, supabase_url, supabase_key, api_key, location, models_dir='models'):
@@ -20,50 +24,95 @@ class WeatherPredictor:
             location (str): Location for weather prediction
             models_dir (str): Directory containing trained models
         """
+        print(f"[DEBUG] Initializing WeatherPredictor with location: {location} and models_dir: {models_dir}")
+        print(f"[DEBUG] Current working directory: {os.getcwd()}")
+        print(f"[DEBUG] Directory contents: {os.listdir('.')}")
+        
+        if os.path.exists(models_dir):
+            print(f"[DEBUG] Models directory exists: {models_dir}")
+            print(f"[DEBUG] Models directory contents: {os.listdir(models_dir)}")
+        else:
+            print(f"[ERROR] Models directory does not exist: {models_dir}")
+        
         self.models_dir = models_dir
+        print("[DEBUG] Initializing Supabase client")
         self.supabase = create_client(supabase_url, supabase_key)
+        print("[DEBUG] Supabase client initialized")
         self.api_key = api_key
         self.location = location
+        print("[DEBUG] About to load models")
         self.load_models()
+        print("[DEBUG] Models loaded successfully")
         
         # Set timezone to IST
         self.timezone = pytz.timezone('Asia/Kolkata')
+        print("[DEBUG] WeatherPredictor initialization complete")
 
     def load_models(self):
         """Load pre-trained models from local directory"""
+        print(f"[DEBUG] Loading models from {self.models_dir}")
         try:
+            print(f"[DEBUG] Loading temp_model from {os.path.join(self.models_dir, 'temp_model.joblib')}")
             self.temp_model = joblib.load(os.path.join(self.models_dir, 'temp_model.joblib'))
+            print("[DEBUG] temp_model loaded")
+            
+            print(f"[DEBUG] Loading weather_model from {os.path.join(self.models_dir, 'weather_model.joblib')}")
             self.weather_model = joblib.load(os.path.join(self.models_dir, 'weather_model.joblib'))
+            print("[DEBUG] weather_model loaded")
+            
+            print(f"[DEBUG] Loading conditions_model from {os.path.join(self.models_dir, 'conditions_model.joblib')}")
             self.conditions_model = joblib.load(os.path.join(self.models_dir, 'conditions_model.joblib'))
+            print("[DEBUG] conditions_model loaded")
+            
+            print(f"[DEBUG] Loading scaler from {os.path.join(self.models_dir, 'scaler.joblib')}")
             self.scaler = joblib.load(os.path.join(self.models_dir, 'scaler.joblib'))
+            print("[DEBUG] scaler loaded")
+            
+            print(f"[DEBUG] Loading label_encoder from {os.path.join(self.models_dir, 'label_encoder.joblib')}")
             self.label_encoder = joblib.load(os.path.join(self.models_dir, 'label_encoder.joblib'))
+            print("[DEBUG] label_encoder loaded")
+            
+            print("[DEBUG] All models loaded successfully")
         except FileNotFoundError as e:
-            print(f"Model loading error: {e}")
+            print(f"[ERROR] Model loading error: {e}")
+            print(f"[DEBUG] Stack trace: {traceback.format_exc()}")
+            raise
+        except Exception as e:
+            print(f"[ERROR] Unexpected error loading models: {e}")
+            print(f"[DEBUG] Stack trace: {traceback.format_exc()}")
             raise
 
     def fetch_current_sensor_data(self):
         """Fetch latest sensor data from Supabase real-time database"""
+        print("[DEBUG] Fetching current sensor data from Supabase")
         try:
+            print("[DEBUG] Executing query to fetch sensor data")
             response = self.supabase.table('sensor_data')\
                 .select('*')\
                 .order('created_at', desc=True)\
                 .limit(1)\
                 .execute()
             
+            print(f"[DEBUG] Query executed, response status: {response.status_code if hasattr(response, 'status_code') else 'unknown'}")
+            
             if response.data:
                 data = response.data[0]
+                print(f"[DEBUG] Sensor data retrieved: {data}")
                 return {
                     'temperature': float(data['temperature']),
                     'humidity': float(data['humidity']),
                     'pressure': float(data['pressure']),
                     'uv_index': float(data['uv_index'])
                 }
+            print("[ERROR] No sensor data available")
             raise Exception("No sensor data available")
         except Exception as e:
-            print(f"Error fetching sensor data: {e}")
+            print(f"[ERROR] Error fetching sensor data: {e}")
+            print(f"[DEBUG] Stack trace: {traceback.format_exc()}")
             raise
 
     def fetch_api_data(self):
+        print(f"[DEBUG] Fetching API data for location: {self.location}")
         url = f"https://weather.visualcrossing.com/VisualCrossingWebServices/rest/services/timeline/{self.location}"
         params = {
             'unitGroup': 'metric',
@@ -72,13 +121,17 @@ class WeatherPredictor:
         }
         
         try:
+            print(f"[DEBUG] Making API request to {url}")
             response = requests.get(url, params=params)
+            print(f"[DEBUG] API response status code: {response.status_code}")
             response.raise_for_status()
             data = response.json()
+            print("[DEBUG] API response successfully parsed as JSON")
             
             current = data.get('currentConditions', {})
+            print(f"[DEBUG] Current conditions from API: {current}")
             
-            return {
+            result = {
                 'windspeed': float(current.get('windspeed', 0) or 0),
                 'winddir': float(current.get('winddir', 0) or 0),
                 'cloudcover': float(current.get('cloudcover', 0) or 0),
@@ -87,20 +140,27 @@ class WeatherPredictor:
                 'sunrise': current.get('sunrise', '06:00:00'),
                 'sunset': current.get('sunset', '18:00:00')
             }
+            print(f"[DEBUG] Processed API data: {result}")
+            return result
         except requests.RequestException as e:
-            print(f"API request failed: {e}")
+            print(f"[ERROR] API request failed: {e}")
+            print(f"[DEBUG] Stack trace: {traceback.format_exc()}")
             raise
         except ValueError as e:
-            print(f"Error converting API data: {e}")
+            print(f"[ERROR] Error converting API data: {e}")
+            print(f"[DEBUG] Stack trace: {traceback.format_exc()}")
             raise
         except Exception as e:
-            print(f"Error fetching API data: {e}")
+            print(f"[ERROR] Error fetching API data: {e}")
+            print(f"[DEBUG] Stack trace: {traceback.format_exc()}")
             raise
 
     def store_prediction_inputs(self, sensor_data, api_data):
         """Store the input data used for predictions"""
+        print("[DEBUG] Storing prediction inputs")
         try:
             current_time = datetime.now(self.timezone)
+            print(f"[DEBUG] Current time in IST: {current_time}")
             
             input_data = {
                 'timestamp': current_time.isoformat(),
@@ -116,30 +176,39 @@ class WeatherPredictor:
                 'sunrise': api_data['sunrise'],
                 'sunset': api_data['sunset']
             }
+            print(f"[DEBUG] Input data prepared: {input_data}")
             
+            print("[DEBUG] Executing Supabase insert")
             self.supabase.table('prediction_inputs').insert(input_data).execute()
-            print(f"Successfully stored prediction inputs at {current_time}")
+            print(f"[DEBUG] Successfully stored prediction inputs at {current_time}")
             return True
         except Exception as e:
-            print(f"Error storing prediction inputs: {e}")
+            print(f"[ERROR] Error storing prediction inputs: {e}")
+            print(f"[DEBUG] Stack trace: {traceback.format_exc()}")
             return False
 
     def calculate_wbt(self, temp, humidity):
         """Calculate Wet Bulb Temperature"""
+        print(f"[DEBUG] Calculating WBT with temp: {temp}, humidity: {humidity}")
         try:
             es = 6.112 * np.exp(17.67 * temp / (temp + 243.5))
             wbt = temp * np.arctan(0.151977 * np.sqrt(humidity + 8.313659)) + \
                   np.arctan(temp + humidity) - np.arctan(humidity - 1.676331) + \
                   0.00391838 * (humidity) ** (3 / 2) * np.arctan(0.023101 * humidity) - 4.686035
-            return round(float(wbt), 1)
+            result = round(float(wbt), 1)
+            print(f"[DEBUG] Calculated WBT: {result}")
+            return result
         except Exception as e:
-            print(f"Error calculating WBT: {e}")
+            print(f"[ERROR] Error calculating WBT: {e}")
+            print(f"[DEBUG] Stack trace: {traceback.format_exc()}")
             return None
 
     def predict_hourly(self, sensor_data, api_data):
         """Make hourly predictions for the next 8 days using sliding window approach"""
+        print("[DEBUG] Starting hourly predictions for next 8 days")
         predictions = []
         current_time = datetime.now(self.timezone)
+        print(f"[DEBUG] Current time: {current_time}")
         daily_temps = {}
         
         try:
@@ -153,8 +222,14 @@ class WeatherPredictor:
             current_winddir = api_data['winddir']
             current_rain_level = api_data['rain_level']
             
+            print(f"[DEBUG] Initial conditions - temp: {current_temp}, humidity: {current_humidity}, pressure: {current_pressure}")
+            
             # Predict for next 8 days * 24 hours
+            print(f"[DEBUG] Starting prediction loop for 8 days (192 hours)")
             for i in range(8 * 24):
+                if i % 24 == 0:
+                    print(f"[DEBUG] Predicting day {i // 24 + 1}")
+                
                 future_time = current_time + timedelta(hours=i)
                 date_key = future_time.date().isoformat()
                 
@@ -180,28 +255,38 @@ class WeatherPredictor:
                 ]
                 
                 features_df = pd.DataFrame([{key: features[key] for key in feature_order}])
+                print(f"[DEBUG] Hour {i}: Created features dataframe with shape {features_df.shape}")
+                
                 features_scaled = self.scaler.transform(features_df)
+                print(f"[DEBUG] Hour {i}: Scaled features")
 
                 # Get temperature predictions
+                print(f"[DEBUG] Hour {i}: Predicting temperature")
                 temp_predictions = self.temp_model.predict(features_scaled)[0]
                 temp = temp_predictions[0]  # Regular temperature
                 temp_max = temp_predictions[1]  # Maximum temperature
                 temp_min = temp_predictions[2]  # Minimum temperature
+                print(f"[DEBUG] Hour {i}: Temperature predictions - temp: {temp}, max: {temp_max}, min: {temp_min}")
 
                 # Get weather predictions
+                print(f"[DEBUG] Hour {i}: Predicting weather")
                 weather = self.weather_model.predict(features_scaled)[0]
                 wind = weather[0]
                 humidity = weather[1]
                 uv_index = weather[2]
                 pressure = weather[3]
                 rain_chance = weather[4]
+                print(f"[DEBUG] Hour {i}: Weather predictions - wind: {wind}, humidity: {humidity}, rain_chance: {rain_chance}")
                 
                 # Get condition prediction
+                print(f"[DEBUG] Hour {i}: Predicting condition")
                 condition_encoded = self.conditions_model.predict(features_scaled)[0]
                 condition = self.label_encoder.inverse_transform([condition_encoded])[0]
+                print(f"[DEBUG] Hour {i}: Condition prediction - {condition}")
 
                 # Calculate wet bulb temperature
                 wbt = self.calculate_wbt(temp, humidity)
+                print(f"[DEBUG] Hour {i}: Calculated WBT - {wbt}")
                 
                 # Track daily min/max temperatures
                 if date_key not in daily_temps:
@@ -252,88 +337,122 @@ class WeatherPredictor:
                 # Randomly adjust wind direction slightly for more realistic predictions
                 current_winddir = (current_winddir + np.random.uniform(-10, 10)) % 360
 
+            print(f"[DEBUG] Completed predictions for all 192 hours")
+            print(f"[DEBUG] Total predictions generated: {len(predictions)}")
             return predictions
         except Exception as e:
-            print(f"Error in predict_hourly: {e}")
+            print(f"[ERROR] Error in predict_hourly: {e}")
+            print(f"[DEBUG] Stack trace: {traceback.format_exc()}")
             raise
 
     def update_predictions_in_supabase(self, predictions):
         """Update predictions in Supabase"""
+        print("[DEBUG] Updating predictions in Supabase")
         try:
             current_time = datetime.now(self.timezone)
+            print(f"[DEBUG] Current time: {current_time}")
             
             # Delete future predictions only
-            self.supabase.table('weather_predictions')\
+            print("[DEBUG] Deleting existing future predictions")
+            delete_response = self.supabase.table('weather_predictions')\
                 .delete()\
                 .gte('datetime', current_time.isoformat())\
                 .execute()
+            print(f"[DEBUG] Delete response: {delete_response.status_code if hasattr(delete_response, 'status_code') else delete_response}")
             
             # Insert new predictions in batches
             batch_size = 100
+            print(f"[DEBUG] Inserting {len(predictions)} new predictions in batches of {batch_size}")
             for i in range(0, len(predictions), batch_size):
                 batch = predictions[i:i + batch_size]
-                self.supabase.table('weather_predictions').insert(batch).execute()
+                print(f"[DEBUG] Inserting batch {i // batch_size + 1} ({len(batch)} predictions)")
+                insert_response = self.supabase.table('weather_predictions').insert(batch).execute()
+                print(f"[DEBUG] Batch {i // batch_size + 1} insert response: {insert_response.status_code if hasattr(insert_response, 'status_code') else 'unknown'}")
             
-            print(f"Successfully updated predictions at {current_time}")
+            print(f"[DEBUG] Successfully updated predictions at {current_time}")
             return True
         except Exception as e:
-            print(f"Error updating predictions: {e}")
+            print(f"[ERROR] Error updating predictions: {e}")
+            print(f"[DEBUG] Stack trace: {traceback.format_exc()}")
             return False
 
     def run_prediction_cycle(self):
         """Run a complete prediction cycle"""
+        print("\n" + "="*50)
+        print(f"[DEBUG] Starting prediction cycle at {datetime.now(self.timezone)}")
         try:
-            print(f"\nStarting prediction cycle at {datetime.now(self.timezone)}")
-            
-            print("Fetching sensor data...")
+            print("[DEBUG] Fetching sensor data...")
             sensor_data = self.fetch_current_sensor_data()
+            print(f"[DEBUG] Sensor data: {sensor_data}")
             
-            print("Fetching API data...")
+            print("[DEBUG] Fetching API data...")
             api_data = self.fetch_api_data()
+            print(f"[DEBUG] API data: {api_data}")
             
-            print("Storing prediction inputs...")
+            print("[DEBUG] Storing prediction inputs...")
             self.store_prediction_inputs(sensor_data, api_data)
             
-            print("Making predictions with sliding window approach...")
+            print("[DEBUG] Making predictions with sliding window approach...")
             predictions = self.predict_hourly(sensor_data, api_data)
+            print(f"[DEBUG] Generated {len(predictions)} predictions")
             
-            print("Updating predictions in database...")
+            print("[DEBUG] Updating predictions in database...")
             success = self.update_predictions_in_supabase(predictions)
             
             if success:
-                print("Prediction cycle completed successfully")
+                print("[DEBUG] Prediction cycle completed successfully")
             else:
-                print("Failed to update predictions in database")
+                print("[ERROR] Failed to update predictions in database")
             
+            print("="*50 + "\n")
             return success
         except Exception as e:
-            print(f"Error in prediction cycle: {e}")
+            print(f"[ERROR] Error in prediction cycle: {e}")
+            print(f"[DEBUG] Stack trace: {traceback.format_exc()}")
+            print("="*50 + "\n")
             return False
 
 def main():
     # Configuration
+    print("[DEBUG] Starting main function")
+    print("[DEBUG] Reading environment variables")
+    
     SUPABASE_URL = os.getenv('SUPABASE_URL')
     SUPABASE_KEY = os.getenv('SUPABASE_KEY')
     API_KEY = os.getenv('API_KEY')
     LOCATION = os.getenv('LOCATION')
     
+    print(f"[DEBUG] Environment variables read - SUPABASE_URL: {'set' if SUPABASE_URL else 'NOT SET'}")
+    print(f"[DEBUG] Environment variables read - SUPABASE_KEY: {'set' if SUPABASE_KEY else 'NOT SET'}")
+    print(f"[DEBUG] Environment variables read - API_KEY: {'set' if API_KEY else 'NOT SET'}")
+    print(f"[DEBUG] Environment variables read - LOCATION: {LOCATION if LOCATION else 'NOT SET'}")
+    
+    if not all([SUPABASE_URL, SUPABASE_KEY, API_KEY, LOCATION]):
+        print("[ERROR] Missing required environment variables")
+        sys.exit(1)
+    
     try:
+        print("[DEBUG] Initializing WeatherPredictor")
         predictor = WeatherPredictor(SUPABASE_URL, SUPABASE_KEY, API_KEY, LOCATION)
+        print("[DEBUG] WeatherPredictor initialized successfully")
         
         while True:
+            print("[DEBUG] Running prediction cycle")
             success = predictor.run_prediction_cycle()
             
             if not success:
-                print("Prediction cycle failed, waiting before retry...")
+                print("[ERROR] Prediction cycle failed, waiting before retry...")
             
-            print(f"\nWaiting for 4 hours before next prediction cycle...")
+            print(f"[DEBUG] Waiting for 4 hours before next prediction cycle...")
             time.sleep(4 * 60 * 60)
             
     except KeyboardInterrupt:
-        print("\nService stopped by user")
+        print("\n[DEBUG] Service stopped by user")
     except Exception as e:
-        print(f"\nCritical error in main loop: {e}")
+        print(f"\n[ERROR] Critical error in main loop: {e}")
+        print(f"[DEBUG] Stack trace: {traceback.format_exc()}")
         raise
 
 if __name__ == "__main__":
+    print("[DEBUG] Script starting")
     main()
