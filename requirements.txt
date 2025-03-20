@@ -1,0 +1,9 @@
+pandas
+numpy
+joblib
+requests
+python-dotenv
+supabase
+pytz
+scikit-learn
+imbalanced-learn
