@@ -345,128 +345,41 @@ class WeatherPredictor:
             print(f"[DEBUG] Stack trace: {traceback.format_exc()}")
             raise
 
-def update_predictions_in_supabase(self, predictions):
-    """Update predictions in Supabase with enhanced debugging"""
-    print("[DEBUG] Updating predictions in Supabase")
-    try:
-        current_time = datetime.now(self.timezone)
-        print(f"[DEBUG] Current time: {current_time}")
-        print(f"[DEBUG] Current time ISO format: {current_time.isoformat()}")
-        
-        # Debug the first few predictions to check format
-        print(f"[DEBUG] Sample prediction data format (first prediction):")
-        if predictions and len(predictions) > 0:
-            for key, value in predictions[0].items():
-                print(f"[DEBUG] Field: {key}, Type: {type(value)}, Value: {value}")
-        
-        # Delete future predictions only
-        print("[DEBUG] Deleting existing future predictions")
+    def update_predictions_in_supabase(self, predictions):
+        """Update predictions in Supabase"""
+        print("[DEBUG] Updating predictions in Supabase")
         try:
-            print(f"[DEBUG] Delete query: table='weather_predictions', filter=gte('datetime', '{current_time.isoformat()}')")
+            current_time = datetime.now(self.timezone)
+            print(f"[DEBUG] Current time: {current_time}")
+            
+            # Delete future predictions only
+            print("[DEBUG] Deleting existing future predictions")
             delete_response = self.supabase.table('weather_predictions')\
                 .delete()\
                 .gte('datetime', current_time.isoformat())\
                 .execute()
+            print(f"[DEBUG] Delete response data: {delete_response.data if hasattr(delete_response, 'data') else 'unknown'}")
             
-            print(f"[DEBUG] Delete response type: {type(delete_response)}")
-            print(f"[DEBUG] Delete response dir: {dir(delete_response)}")
-            
-            if hasattr(delete_response, 'data'):
-                print(f"[DEBUG] Delete response data: {delete_response.data}")
-            
-            if hasattr(delete_response, 'error'):
-                print(f"[DEBUG] Delete response error: {delete_response.error}")
-                
-            if hasattr(delete_response, 'status_code'):
-                print(f"[DEBUG] Delete response status code: {delete_response.status_code}")
-            
-            print(f"[DEBUG] Delete response complete: {delete_response}")
-        except Exception as delete_error:
-            print(f"[ERROR] Exception during delete operation: {delete_error}")
-            print(f"[DEBUG] Delete error traceback: {traceback.format_exc()}")
-        
-        # Insert new predictions in batches
-        batch_size = 50  # Reduced batch size for testing
-        total_batches = (len(predictions) + batch_size - 1) // batch_size
-        print(f"[DEBUG] Inserting {len(predictions)} new predictions in {total_batches} batches of {batch_size}")
-        
-        successful_batches = 0
-        failed_batches = 0
-        
-        for i in range(0, len(predictions), batch_size):
-            batch_num = i // batch_size + 1
-            batch = predictions[i:i + batch_size]
-            batch_start_index = i
-            batch_end_index = min(i + batch_size, len(predictions))
-            
-            print(f"[DEBUG] Processing batch {batch_num}/{total_batches} (indices {batch_start_index}-{batch_end_index-1}, {len(batch)} predictions)")
-            
-            try:
-                print(f"[DEBUG] Batch {batch_num}: Executing insert query")
-                insert_start_time = time.time()
-                
-                insert_response = self.supabase.table('weather_predictions').insert(batch).execute()
-                
-                insert_end_time = time.time()
-                insert_duration = insert_end_time - insert_start_time
-                
-                print(f"[DEBUG] Batch {batch_num}: Insert took {insert_duration:.2f} seconds")
-                print(f"[DEBUG] Batch {batch_num}: Response type: {type(insert_response)}")
-                
-                if hasattr(insert_response, 'data'):
-                    # Log first few items to avoid overwhelming logs
-                    data_sample = insert_response.data[:2] if insert_response.data and len(insert_response.data) > 2 else insert_response.data
-                    print(f"[DEBUG] Batch {batch_num}: Response data sample: {data_sample}")
-                    print(f"[DEBUG] Batch {batch_num}: Response data length: {len(insert_response.data) if insert_response.data else 0}")
-                
-                if hasattr(insert_response, 'error'):
-                    print(f"[ERROR] Batch {batch_num}: Response error: {insert_response.error}")
-                
-                if hasattr(insert_response, 'status_code'):
-                    print(f"[DEBUG] Batch {batch_num}: Response status code: {insert_response.status_code}")
-                
-                successful_batches += 1
-                print(f"[DEBUG] Batch {batch_num}: Insert completed successfully")
-                
-            except Exception as batch_error:
-                failed_batches += 1
-                print(f"[ERROR] Batch {batch_num}: Exception during insert: {batch_error}")
-                print(f"[DEBUG] Batch {batch_num}: Insert error traceback: {traceback.format_exc()}")
-                
-                # Try to get more details about the batch that failed
-                print(f"[DEBUG] Batch {batch_num}: Examining problematic batch:")
+            # Insert new predictions in batches
+            batch_size = 50  # Reduced batch size
+            print(f"[DEBUG] Inserting {len(predictions)} new predictions in batches of {batch_size}")
+            for i in range(0, len(predictions), batch_size):
+                batch = predictions[i:i + batch_size]
+                print(f"[DEBUG] Inserting batch {i // batch_size + 1} ({len(batch)} predictions)")
                 try:
-                    for j, pred in enumerate(batch):
-                        # Log a sample from a problematic prediction if batch is large
-                        if j < 3 or j > len(batch) - 3:
-                            problem_keys = []
-                            for key, value in pred.items():
-                                if value is None:
-                                    problem_keys.append(key)
-                                elif key == 'condition' and not isinstance(value, str):
-                                    problem_keys.append(f"{key}:{type(value)}")
-                                elif key != 'condition' and not isinstance(value, (int, float, str)):
-                                    problem_keys.append(f"{key}:{type(value)}")
-                                    
-                            if problem_keys:
-                                print(f"[DEBUG] Batch {batch_num}, Item {j}: Potential problem with keys: {problem_keys}")
-                                print(f"[DEBUG] Batch {batch_num}, Item {j}: Values for problem keys: {[(k, pred.get(k)) for k in problem_keys]}")
-                except Exception as analysis_error:
-                    print(f"[ERROR] Batch {batch_num}: Error while analyzing problematic batch: {analysis_error}")
-        
-        print(f"[DEBUG] Batch summary: {successful_batches} successful, {failed_batches} failed out of {total_batches} total batches")
-        
-        if failed_batches == 0:
-            print(f"[DEBUG] Successfully updated all predictions at {current_time}")
-            return True
-        else:
-            print(f"[ERROR] Some batches failed during update: {failed_batches} out of {total_batches}")
-            return False
+                    insert_response = self.supabase.table('weather_predictions').insert(batch).execute()
+                    print(f"[DEBUG] Batch {i // batch_size + 1} insert response: {insert_response.data if hasattr(insert_response, 'data') else 'unknown'}")
+                except Exception as e:
+                    print(f"[ERROR] Failed to insert batch {i // batch_size + 1}: {e}")
+                    print(f"[DEBUG] First prediction in failed batch: {batch[0]}")
+                    raise
             
-    except Exception as e:
-        print(f"[ERROR] Unhandled error updating predictions: {e}")
-        print(f"[DEBUG] Update error traceback: {traceback.format_exc()}")
-        return False
+            print(f"[DEBUG] Successfully updated predictions at {current_time}")
+            return True
+        except Exception as e:
+            print(f"[ERROR] Error updating predictions: {e}")
+            print(f"[DEBUG] Stack trace: {traceback.format_exc()}")
+            return False
 
     def run_prediction_cycle(self):
         """Run a complete prediction cycle"""
@@ -505,6 +418,7 @@ def update_predictions_in_supabase(self, predictions):
             return False
 
 def main():
+    """Main function to run the weather prediction service"""
     # Configuration
     print("[DEBUG] Starting main function")
     print("[DEBUG] Reading environment variables")
