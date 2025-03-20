@@ -346,121 +346,44 @@ class WeatherPredictor:
             raise
 
     def update_predictions_in_supabase(self, predictions):
-        """Update predictions in Supabase using upsert operations"""
-        print("[DEBUG] Updating predictions in Supabase using upsert")
+        """Update predictions in Supabase"""
+        print("[DEBUG] Updating predictions in Supabase")
         try:
             current_time = datetime.now(self.timezone)
             print(f"[DEBUG] Current time: {current_time}")
             
-            # Reduced prediction window (optional)
-            # predictions = predictions[:120]  # First 5 days instead of 8
+            # Delete and insert predictions one by one
+            print("[DEBUG] Deleting and inserting predictions one by one")
+            for prediction in predictions:
+                try:
+                    # Delete existing prediction for the same datetime
+                    delete_response = self.supabase.table('weather_predictions')\
+                        .delete()\
+                        .eq('datetime', prediction['datetime'])\
+                        .execute()
+                    print(f"[DEBUG] Delete response for {prediction['datetime']}: {delete_response.data if hasattr(delete_response, 'data') else 'unknown'}")
+                    
+                    # Insert new prediction
+                    insert_response = self.supabase.table('weather_predictions').insert(prediction).execute()
+                    print(f"[DEBUG] Insert response for {prediction['datetime']}: {insert_response.data if hasattr(insert_response, 'data') else 'unknown'}")
+                except Exception as e:
+                    print(f"[ERROR] Failed to update prediction for {prediction['datetime']}: {e}")
+                    print(f"[DEBUG] Stack trace: {traceback.format_exc()}")
+                    raise
             
-            # Process in smaller batches for better performance
-            batch_size = 20  # Smaller batch size
-            total_batches = (len(predictions) + batch_size - 1) // batch_size
-            
-            print(f"[DEBUG] Upserting {len(predictions)} predictions in {total_batches} batches of {batch_size}")
-            
-            start_time = time.time()
-            for i in range(0, len(predictions), batch_size):
-                batch = predictions[i:i + batch_size]
-                batch_start = time.time()
-                print(f"[DEBUG] Processing batch {i // batch_size + 1}/{total_batches} ({len(batch)} predictions)")
-                
-                # For each prediction in the batch, do an individual upsert based on datetime
-                for pred in batch:
-                    try:
-                        # Check if record exists
-                        resp = self.supabase.table('weather_predictions') \
-                            .select('id') \
-                            .eq('datetime', pred['datetime']) \
-                            .execute()
-                        
-                        if resp.data and len(resp.data) > 0:
-                            # Update existing record
-                            self.supabase.table('weather_predictions') \
-                                .update(pred) \
-                                .eq('datetime', pred['datetime']) \
-                                .execute()
-                        else:
-                            # Insert new record
-                            self.supabase.table('weather_predictions') \
-                                .insert(pred) \
-                                .execute()
-                    except Exception as e:
-                        print(f"[ERROR] Failed to upsert prediction for {pred['datetime']}: {e}")
-                        continue
-                
-                batch_end = time.time()
-                print(f"[DEBUG] Batch {i // batch_size + 1}/{total_batches} completed in {batch_end - batch_start:.2f} seconds")
-            
-            end_time = time.time()
-            print(f"[DEBUG] Successfully updated predictions in {end_time - start_time:.2f} seconds")
-            
-            # Clean up old records
-            try:
-                print("[DEBUG] Cleaning up records older than 10 days")
-                ten_days_ago = (current_time - timedelta(days=10)).isoformat()
-                self.supabase.table('weather_predictions') \
-                    .delete() \
-                    .lt('datetime', ten_days_ago) \
-                    .execute()
-                print("[DEBUG] Old records cleanup complete")
-            except Exception as e:
-                print(f"[ERROR] Failed to clean up old records: {e}")
-            
+            print(f"[DEBUG] Successfully updated predictions at {current_time}")
             return True
         except Exception as e:
-            print(f"[ERROR] Error in update_predictions_in_supabase: {e}")
+            print(f"[ERROR] Error updating predictions: {e}")
             print(f"[DEBUG] Stack trace: {traceback.format_exc()}")
             return False
-
-    def check_database_size(self):
-        """Check the database size to avoid hitting free tier limits"""
-        try:
-            # Note: This is a simplified approach - Supabase doesn't have a direct API to get DB size
-            # This is an estimation based on record counts
-            print("[DEBUG] Checking database size (estimated)")
-            
-            # Count weather predictions
-            weather_count = self.supabase.table('weather_predictions') \
-                .select('id', count='exact') \
-                .execute()
-            
-            # Count inputs
-            inputs_count = self.supabase.table('prediction_inputs') \
-                .select('id', count='exact') \
-                .execute()
-            
-            # Rough estimation (adjust based on your data)
-            weather_size = len(weather_count.data) * 0.5  # KB per record
-            inputs_size = len(inputs_count.data) * 0.2  # KB per record
-            
-            total_size_kb = weather_size + inputs_size
-            total_size_mb = total_size_kb / 1024
-            
-            print(f"[DEBUG] Estimated database size: {total_size_mb:.2f} MB")
-            
-            # Alert if approaching limit
-            if total_size_mb > 400:  # 80% of 500MB limit
-                print("[WARNING] Database approaching size limit (80% of free tier)")
-            
-            return total_size_mb
-        except Exception as e:
-            print(f"[ERROR] Failed to check database size: {e}")
-            return None
 
     def run_prediction_cycle(self):
         """Run a complete prediction cycle"""
         print("\n" + "="*50)
-        print(f"[DEBUG] Starting prediction cycle at {datetime.now(self.timezone)}")
+        cycle_start_time = datetime.now(self.timezone)
+        print(f"[DEBUG] Starting prediction cycle at {cycle_start_time}")
         try:
-            # Check database size first
-            db_size = self.check_database_size()
-            if db_size and db_size > 450:  # 90% of limit
-                print("[WARNING] Database size critical - clean up data before proceeding")
-                # Implement emergency cleanup or notification logic here
-            
             print("[DEBUG] Fetching sensor data...")
             sensor_data = self.fetch_current_sensor_data()
             print(f"[DEBUG] Sensor data: {sensor_data}")
@@ -473,14 +396,24 @@ class WeatherPredictor:
             self.store_prediction_inputs(sensor_data, api_data)
             
             print("[DEBUG] Making predictions with sliding window approach...")
+            prediction_start = datetime.now()
             predictions = self.predict_hourly(sensor_data, api_data)
-            print(f"[DEBUG] Generated {len(predictions)} predictions")
+            prediction_end = datetime.now()
+            prediction_duration = (prediction_end - prediction_start).total_seconds()
+            print(f"[DEBUG] Generated {len(predictions)} predictions in {prediction_duration:.2f} seconds")
             
             print("[DEBUG] Updating predictions in database...")
+            db_update_start = datetime.now()
             success = self.update_predictions_in_supabase(predictions)
+            db_update_end = datetime.now()
+            db_update_duration = (db_update_end - db_update_start).total_seconds()
+            
+            cycle_end_time = datetime.now(self.timezone)
+            total_duration = (cycle_end_time - cycle_start_time).total_seconds()
             
             if success:
-                print("[DEBUG] Prediction cycle completed successfully")
+                print(f"[DEBUG] Prediction cycle completed successfully in {total_duration:.2f} seconds")
+                print(f"[DEBUG] Database update took {db_update_duration:.2f} seconds ({(db_update_duration/total_duration)*100:.1f}% of total time)")
             else:
                 print("[ERROR] Failed to update predictions in database")
             
@@ -519,12 +452,17 @@ def main():
         
         while True:
             print("[DEBUG] Running prediction cycle")
+            start_time = datetime.now()
             success = predictor.run_prediction_cycle()
+            end_time = datetime.now()
+            duration = (end_time - start_time).total_seconds()
             
             if not success:
                 print("[ERROR] Prediction cycle failed, waiting before retry...")
+            else:
+                print(f"[DEBUG] Prediction cycle completed in {duration:.2f} seconds")
             
-            print(f"[DEBUG] Waiting for 4 hours before next prediction cycle...")
+            print(f"[DEBUG] Waiting for 4 hours before next prediction cycle....")
             time.sleep(4 * 60 * 60)
             
     except KeyboardInterrupt:
