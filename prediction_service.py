@@ -360,15 +360,22 @@ class WeatherPredictor:
                 .execute()
             print(f"[DEBUG] Delete response data: {delete_response.data if hasattr(delete_response, 'data') else 'unknown'}")
             
-            # Insert new predictions in batches
-            batch_size = 50  # Reduced batch size
+            # Insert new predictions in batches with increased batch size of 100
+            batch_size = 100  # Increased from 50 to 100
             print(f"[DEBUG] Inserting {len(predictions)} new predictions in batches of {batch_size}")
+            
+            # Add time tracking for batch insertions
             for i in range(0, len(predictions), batch_size):
                 batch = predictions[i:i + batch_size]
-                print(f"[DEBUG] Inserting batch {i // batch_size + 1} ({len(batch)} predictions)")
+                batch_start_time = datetime.now()
+                print(f"[DEBUG] Inserting batch {i // batch_size + 1} ({len(batch)} predictions) - Started at {batch_start_time.strftime('%H:%M:%S')}")
+                
                 try:
                     insert_response = self.supabase.table('weather_predictions').insert(batch).execute()
-                    print(f"[DEBUG] Batch {i // batch_size + 1} insert response: {insert_response.data if hasattr(insert_response, 'data') else 'unknown'}")
+                    batch_end_time = datetime.now()
+                    batch_duration = (batch_end_time - batch_start_time).total_seconds()
+                    print(f"[DEBUG] Batch {i // batch_size + 1} insert completed in {batch_duration:.2f} seconds - Finished at {batch_end_time.strftime('%H:%M:%S')}")
+                    print(f"[DEBUG] Batch {i // batch_size + 1} insert response: {insert_response.data[:2] if hasattr(insert_response, 'data') else 'unknown'} (showing first 2 records only)")
                 except Exception as e:
                     print(f"[ERROR] Failed to insert batch {i // batch_size + 1}: {e}")
                     print(f"[DEBUG] First prediction in failed batch: {batch[0]}")
@@ -384,7 +391,8 @@ class WeatherPredictor:
     def run_prediction_cycle(self):
         """Run a complete prediction cycle"""
         print("\n" + "="*50)
-        print(f"[DEBUG] Starting prediction cycle at {datetime.now(self.timezone)}")
+        cycle_start_time = datetime.now(self.timezone)
+        print(f"[DEBUG] Starting prediction cycle at {cycle_start_time}")
         try:
             print("[DEBUG] Fetching sensor data...")
             sensor_data = self.fetch_current_sensor_data()
@@ -398,14 +406,24 @@ class WeatherPredictor:
             self.store_prediction_inputs(sensor_data, api_data)
             
             print("[DEBUG] Making predictions with sliding window approach...")
+            prediction_start = datetime.now()
             predictions = self.predict_hourly(sensor_data, api_data)
-            print(f"[DEBUG] Generated {len(predictions)} predictions")
+            prediction_end = datetime.now()
+            prediction_duration = (prediction_end - prediction_start).total_seconds()
+            print(f"[DEBUG] Generated {len(predictions)} predictions in {prediction_duration:.2f} seconds")
             
             print("[DEBUG] Updating predictions in database...")
+            db_update_start = datetime.now()
             success = self.update_predictions_in_supabase(predictions)
+            db_update_end = datetime.now()
+            db_update_duration = (db_update_end - db_update_start).total_seconds()
+            
+            cycle_end_time = datetime.now(self.timezone)
+            total_duration = (cycle_end_time - cycle_start_time).total_seconds()
             
             if success:
-                print("[DEBUG] Prediction cycle completed successfully")
+                print(f"[DEBUG] Prediction cycle completed successfully in {total_duration:.2f} seconds")
+                print(f"[DEBUG] Database update took {db_update_duration:.2f} seconds ({(db_update_duration/total_duration)*100:.1f}% of total time)")
             else:
                 print("[ERROR] Failed to update predictions in database")
             
@@ -444,10 +462,15 @@ def main():
         
         while True:
             print("[DEBUG] Running prediction cycle")
+            start_time = datetime.now()
             success = predictor.run_prediction_cycle()
+            end_time = datetime.now()
+            duration = (end_time - start_time).total_seconds()
             
             if not success:
                 print("[ERROR] Prediction cycle failed, waiting before retry...")
+            else:
+                print(f"[DEBUG] Prediction cycle completed in {duration:.2f} seconds")
             
             print(f"[DEBUG] Waiting for 4 hours before next prediction cycle...")
             time.sleep(4 * 60 * 60)
