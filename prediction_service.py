@@ -47,12 +47,9 @@ class WeatherPredictor:
         
         # Set timezone to IST
         self.timezone = pytz.timezone('Asia/Kolkata')
-        
-        # Rate limiting settings
-        self.rate_limit_delay = 1.5  # Base delay between Supabase operations in seconds
-        self.batch_size = 6  # Number of operations before adding extra delay
-        self.batch_delay = 5  # Extra delay after a batch in seconds
-        
+        # Rate limiting parameters for free tier
+        self.min_db_delay = 0.5  # minimum delay in seconds
+        self.max_db_delay = 2.0  # maximum delay in seconds
         print("[DEBUG] WeatherPredictor initialization complete")
 
     def load_models(self):
@@ -94,9 +91,8 @@ class WeatherPredictor:
         print("[DEBUG] Fetching current sensor data from Supabase")
         try:
             print("[DEBUG] Executing query to fetch sensor data")
-            
-            # Add delay before querying to avoid rate limits
-            self._apply_rate_limit_delay()
+            # Add delay to avoid rate limiting
+            self._apply_rate_limiting_delay()
             
             response = self.supabase.table('sensor_data')\
                 .select('*')\
@@ -116,14 +112,10 @@ class WeatherPredictor:
                     'uv_index': float(data['uv_index'])
                 }
             print("[ERROR] No sensor data available")
-            raise Exception("No sensor data available")
+            raise Exception("No sensor data available in the database")
         except Exception as e:
             print(f"[ERROR] Error fetching sensor data: {e}")
             print(f"[DEBUG] Stack trace: {traceback.format_exc()}")
-            
-            # Wait longer after an error
-            print("[DEBUG] Waiting 10 seconds after error before continuing...")
-            time.sleep(10)
             raise
 
     def fetch_api_data(self):
@@ -160,9 +152,6 @@ class WeatherPredictor:
         except requests.RequestException as e:
             print(f"[ERROR] API request failed: {e}")
             print(f"[DEBUG] Stack trace: {traceback.format_exc()}")
-            # Wait longer after an API error
-            print("[DEBUG] Waiting 30 seconds after API error before continuing...")
-            time.sleep(30)
             raise
         except ValueError as e:
             print(f"[ERROR] Error converting API data: {e}")
@@ -173,11 +162,9 @@ class WeatherPredictor:
             print(f"[DEBUG] Stack trace: {traceback.format_exc()}")
             raise
 
-    def _apply_rate_limit_delay(self):
-        """Apply a delay to respect rate limits"""
-        # Add some jitter to the delay to prevent synchronized requests
-        jitter = random.uniform(-0.2, 0.5)
-        delay = max(0.5, self.rate_limit_delay + jitter)
+    def _apply_rate_limiting_delay(self):
+        """Apply a random delay to avoid hitting rate limits"""
+        delay = random.uniform(self.min_db_delay, self.max_db_delay)
         print(f"[DEBUG] Rate limiting: Waiting {delay:.2f} seconds before database operation")
         time.sleep(delay)
 
@@ -204,10 +191,8 @@ class WeatherPredictor:
             }
             print(f"[DEBUG] Input data prepared: {input_data}")
             
-            # Add delay before inserting
-            self._apply_rate_limit_delay()
-            
-            print("[DEBUG] Executing Supabase insert")
+            print("[DEBUG] Executing Supabase insert with rate limiting")
+            self._apply_rate_limiting_delay()
             self.supabase.table('prediction_inputs').insert(input_data).execute()
             print(f"[DEBUG] Successfully stored prediction inputs at {current_time}")
             return True
@@ -343,7 +328,8 @@ class WeatherPredictor:
                     'sunset': api_data['sunset'],
                     'min_temp': round(float(daily_temps[date_key]['min_temp']), 1),
                     'max_temp': round(float(daily_temps[date_key]['max_temp']), 1),
-                    'prediction_made_at': current_time.isoformat()
+                    'prediction_made_at': current_time.isoformat(),
+                    'prediction_date': date_key  # Add date in YYYY-MM-DD format for easier querying
                 }
                 
                 predictions.append(prediction)
@@ -374,79 +360,99 @@ class WeatherPredictor:
             print(f"[DEBUG] Stack trace: {traceback.format_exc()}")
             raise
 
+    def group_predictions_by_date(self, predictions):
+        """Group predictions by date for batch processing"""
+        print("[DEBUG] Grouping predictions by date")
+        date_groups = {}
+        for pred in predictions:
+            # Extract date from datetime
+            pred_date = pred['datetime'].split('T')[0]
+            if pred_date not in date_groups:
+                date_groups[pred_date] = []
+            date_groups[pred_date].append(pred)
+        
+        return date_groups
+
+    def delete_predictions_for_date(self, date):
+        """Delete all predictions for a specific date using date string comparison"""
+        print(f"[DEBUG] Deleting predictions for date: {date}")
+        try:
+            self._apply_rate_limiting_delay()
+            # Use simple date string comparison for better compatibility
+            self.supabase.table('weather_predictions').delete().eq('prediction_date', date).execute()
+            print(f"[DEBUG] Successfully deleted predictions for date: {date}")
+            return True
+        except Exception as e:
+            print(f"[ERROR] Failed to delete predictions for {date}: {e}")
+            print(f"[DEBUG] Stack trace: {traceback.format_exc()}")
+            # Continue even if delete fails
+            return False
+
+    def insert_predictions_in_batches(self, predictions_by_date):
+        """Insert predictions in batches to avoid hitting rate limits"""
+        print("[DEBUG] Inserting new predictions with rate limiting")
+        
+        try:
+            for date, predictions in predictions_by_date.items():
+                print(f"[DEBUG] Processing day {date} with {len(predictions)} predictions")
+                
+                # Delete existing predictions for this date
+                self.delete_predictions_for_date(date)
+                
+                # Calculate batch size based on number of predictions
+                # Smaller batches for free tier
+                batch_size = min(6, max(1, len(predictions) // 4))
+                num_batches = (len(predictions) + batch_size - 1) // batch_size
+                
+                print(f"[DEBUG] Processing day {date} with {len(predictions)} predictions in {num_batches} batches")
+                
+                # Process in batches
+                for i in range(0, len(predictions), batch_size):
+                    batch_num = (i // batch_size) + 1
+                    print(f"[DEBUG] Processing batch {batch_num}/{num_batches} for day {date}")
+                    batch = predictions[i:i + batch_size]
+                    
+                    # Rate limiting
+                    self._apply_rate_limiting_delay()
+                    
+                    # Insert batch
+                    try:
+                        self.supabase.table('weather_predictions').insert(batch).execute()
+                        print(f"[DEBUG] Successfully inserted batch {batch_num}/{num_batches} for {date}")
+                    except Exception as e:
+                        print(f"[ERROR] Failed to insert batch {batch_num}/{num_batches} for {date}: {e}")
+                        # Continue with next batch even if this one fails
+                        continue
+                
+                # Additional delay between days to reduce load
+                time.sleep(2)
+            
+            return True
+        except Exception as e:
+            print(f"[ERROR] Error in batch insert: {e}")
+            print(f"[DEBUG] Stack trace: {traceback.format_exc()}")
+            return False
+
     def update_predictions_in_supabase(self, predictions):
-        """Update predictions in Supabase with rate limiting for free tier"""
-        print("[DEBUG] Updating predictions in Supabase with rate limiting")
+        """Update predictions in Supabase using batch processing"""
+        print("[DEBUG] Updating predictions in Supabase with improved error handling and rate limiting")
         try:
             current_time = datetime.now(self.timezone)
             print(f"[DEBUG] Current time: {current_time}")
             
-            # Process in smaller batches with delays between them
-            print(f"[DEBUG] Processing {len(predictions)} predictions in batches of {self.batch_size}")
-            successful_updates = 0
-            total_predictions = len(predictions)
+            # Group predictions by date for more efficient processing
+            predictions_by_date = self.group_predictions_by_date(predictions)
+            print(f"[DEBUG] Grouped predictions into {len(predictions_by_date)} days")
             
-            # Group predictions by day to reduce the number of operations
-            predictions_by_day = {}
-            for prediction in predictions:
-                day = prediction['datetime'].split('T')[0]
-                if day not in predictions_by_day:
-                    predictions_by_day[day] = []
-                predictions_by_day[day].append(prediction)
+            # Insert predictions in batches
+            success = self.insert_predictions_in_batches(predictions_by_date)
             
-            print(f"[DEBUG] Grouped predictions into {len(predictions_by_day)} days")
+            if success:
+                print(f"[DEBUG] Successfully updated all predictions at {current_time}")
+            else:
+                print(f"[WARNING] Some predictions may not have been updated correctly")
             
-            # First, delete old predictions for upcoming days
-            print("[DEBUG] Deleting old predictions for upcoming days")
-            for day in predictions_by_day.keys():
-                try:
-                    self._apply_rate_limit_delay()
-                    delete_response = self.supabase.table('weather_predictions')\
-                        .delete()\
-                        .like('datetime', f"{day}%")\
-                        .execute()
-                    print(f"[DEBUG] Deleted old predictions for {day}")
-                except Exception as e:
-                    print(f"[ERROR] Failed to delete predictions for {day}: {e}")
-                    print(f"[DEBUG] Stack trace: {traceback.format_exc()}")
-                    # Continue with next day
-            
-            # Now insert new predictions with rate limiting
-            print("[DEBUG] Inserting new predictions with rate limiting")
-            for day, day_predictions in predictions_by_day.items():
-                # Split day's predictions into smaller batches
-                batch_predictions = [day_predictions[i:i + self.batch_size] for i in range(0, len(day_predictions), self.batch_size)]
-                
-                print(f"[DEBUG] Processing day {day} with {len(day_predictions)} predictions in {len(batch_predictions)} batches")
-                
-                for batch_idx, batch in enumerate(batch_predictions):
-                    print(f"[DEBUG] Processing batch {batch_idx+1}/{len(batch_predictions)} for day {day}")
-                    
-                    for prediction in batch:
-                        try:
-                            # Apply rate limit delay
-                            self._apply_rate_limit_delay()
-                            
-                            # Insert new prediction
-                            insert_response = self.supabase.table('weather_predictions').insert(prediction).execute()
-                            successful_updates += 1
-                            print(f"[DEBUG] Inserted prediction for {prediction['datetime']} (Progress: {successful_updates}/{total_predictions})")
-                        except Exception as e:
-                            print(f"[ERROR] Failed to insert prediction for {prediction['datetime']}: {e}")
-                            print(f"[DEBUG] Stack trace: {traceback.format_exc()}")
-                            # Wait longer after an error
-                            print("[DEBUG] Waiting 10 seconds after error before continuing...")
-                            time.sleep(10)
-                    
-                    # Add extra delay after each batch
-                    batch_delay = self.batch_delay + random.uniform(0, 2)
-                    print(f"[DEBUG] Batch {batch_idx+1} complete. Waiting {batch_delay:.2f} seconds before next batch...")
-                    time.sleep(batch_delay)
-            
-            success_rate = (successful_updates / total_predictions) * 100
-            print(f"[DEBUG] Successfully updated {successful_updates}/{total_predictions} predictions ({success_rate:.1f}%)")
-            
-            return successful_updates > 0
+            return success
         except Exception as e:
             print(f"[ERROR] Error updating predictions: {e}")
             print(f"[DEBUG] Stack trace: {traceback.format_exc()}")
@@ -476,7 +482,7 @@ class WeatherPredictor:
             prediction_duration = (prediction_end - prediction_start).total_seconds()
             print(f"[DEBUG] Generated {len(predictions)} predictions in {prediction_duration:.2f} seconds")
             
-            print("[DEBUG] Updating predictions in database with rate limiting...")
+            print("[DEBUG] Updating predictions in database...")
             db_update_start = datetime.now()
             success = self.update_predictions_in_supabase(predictions)
             db_update_end = datetime.now()
@@ -519,59 +525,42 @@ def main():
         print("[ERROR] Missing required environment variables")
         sys.exit(1)
     
-    # Failsafe mechanism to prevent too frequent runs
-    min_cycle_interval = 4 * 60 * 60  # Minimum 4 hours between cycles
-    last_cycle_time = None
-    
     try:
         print("[DEBUG] Initializing WeatherPredictor")
         predictor = WeatherPredictor(SUPABASE_URL, SUPABASE_KEY, API_KEY, LOCATION)
         print("[DEBUG] WeatherPredictor initialized successfully")
         
+        # Variable to track consecutive failures
+        consecutive_failures = 0
+        max_consecutive_failures = 3
+        
         while True:
-            current_time = datetime.now()
-            
-            # Check if we need to wait before running the next cycle
-            if last_cycle_time is not None:
-                elapsed = (current_time - last_cycle_time).total_seconds()
-                if elapsed < min_cycle_interval:
-                    wait_time = min_cycle_interval - elapsed
-                    print(f"[DEBUG] Last cycle ran {elapsed:.1f} seconds ago. Waiting {wait_time:.1f} seconds before next cycle...")
-                    time.sleep(wait_time)
-            
             print("[DEBUG] Running prediction cycle")
             start_time = datetime.now()
             success = predictor.run_prediction_cycle()
             end_time = datetime.now()
             duration = (end_time - start_time).total_seconds()
-            last_cycle_time = end_time
             
             if not success:
-                print("[ERROR] Prediction cycle failed, waiting before retry...")
-                time.sleep(30 * 60)  # Wait 30 minutes before retrying after failure
+                consecutive_failures += 1
+                print(f"[ERROR] Prediction cycle failed, failure count: {consecutive_failures}")
+                
+                if consecutive_failures >= max_consecutive_failures:
+                    print(f"[ERROR] {consecutive_failures} consecutive failures, increasing wait time")
+                    # Exponential backoff for wait time on consecutive failures
+                    wait_time = min(4 * consecutive_failures, 24)  # Max 24 hours
+                    print(f"[DEBUG] Waiting for {wait_time} hours before next attempt...")
+                    time.sleep(wait_time * 60 * 60)
+                else:
+                    # Short wait before retry
+                    print("[DEBUG] Waiting for 15 minutes before retry...")
+                    time.sleep(15 * 60)
             else:
+                # Reset failure counter on success
+                consecutive_failures = 0
                 print(f"[DEBUG] Prediction cycle completed in {duration:.2f} seconds")
-            
-                # Dynamic wait time between 4-6 hours with some randomness to avoid pattern detection
-                wait_hours = 4 + random.uniform(0, 2)
-                wait_seconds = wait_hours * 60 * 60
-                
-                print(f"[DEBUG] Waiting for {wait_hours:.2f} hours ({wait_seconds:.0f} seconds) before next prediction cycle...")
-                
-                # Break the wait into smaller chunks so the script can be interrupted more easily
-                chunk_size = 15 * 60  # 15 minutes per chunk
-                chunks = int(wait_seconds / chunk_size)
-                
-                for i in range(chunks):
-                    time.sleep(chunk_size)
-                    remaining = wait_seconds - ((i+1) * chunk_size)
-                    if remaining > 0:
-                        print(f"[DEBUG] Still waiting... {remaining/60/60:.1f} hours remaining")
-                
-                # Sleep any remaining seconds
-                remaining = wait_seconds - (chunks * chunk_size)
-                if remaining > 0:
-                    time.sleep(remaining)
+                print(f"[DEBUG] Waiting for 4 hours before next prediction cycle....")
+                time.sleep(4 * 60 * 60)
             
     except KeyboardInterrupt:
         print("\n[DEBUG] Service stopped by user")
