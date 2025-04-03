@@ -10,52 +10,101 @@ import pytz
 import traceback
 import sys
 import random
+import signal
+from huggingface_hub import hf_hub_download, snapshot_download
 
 print("Starting import of modules: SUCCESS")
 
+class TimeoutError(Exception):
+    """Exception raised when execution time exceeds the limit."""
+    pass
+
+def timeout_handler(signum, frame):
+    """Signal handler for timeout."""
+    raise TimeoutError("Execution exceeded time limit")
+
 class WeatherPredictor:
-    def __init__(self, supabase_url, supabase_key, api_key, location, models_dir='models'):
+    def __init__(self, supabase_url, supabase_key, api_key, location, models_dir='models', hf_repo_id=None):
         """
-        Initialize WeatherPredictor with real-time data integration
+        Initialize WeatherPredictor with Hugging Face model storage
         
         Args:
             supabase_url (str): Supabase project URL
             supabase_key (str): Supabase API key
             api_key (str): Visual Crossing API key
             location (str): Location for weather prediction
-            models_dir (str): Directory containing trained models
+            models_dir (str): Directory to store downloaded models
+            hf_repo_id (str): Hugging Face repository ID for models
         """
-        print(f"[DEBUG] Initializing WeatherPredictor with location: {location} and models_dir: {models_dir}")
-        print(f"[DEBUG] Current working directory: {os.getcwd()}")
-        print(f"[DEBUG] Directory contents: {os.listdir('.')}")
-        
-        if os.path.exists(models_dir):
-            print(f"[DEBUG] Models directory exists: {models_dir}")
-            print(f"[DEBUG] Models directory contents: {os.listdir(models_dir)}")
-        else:
-            print(f"[ERROR] Models directory does not exist: {models_dir}")
+        print(f"[DEBUG] Initializing WeatherPredictor with location: {location}")
+        print(f"[DEBUG] Models will be stored in: {models_dir}")
         
         self.models_dir = models_dir
+        self.hf_repo_id = hf_repo_id or os.getenv('HF_REPO_ID', 'abin-varghese/weather_models')
+        print(f"[DEBUG] Using Hugging Face repo: {self.hf_repo_id}")
+        
+        os.makedirs(self.models_dir, exist_ok=True)
+        
         print("[DEBUG] Initializing Supabase client")
         self.supabase = create_client(supabase_url, supabase_key)
         print("[DEBUG] Supabase client initialized")
         self.api_key = api_key
         self.location = location
-        print("[DEBUG] About to load models")
-        self.load_models()
-        print("[DEBUG] Models loaded successfully")
         
         # Set timezone to IST
         self.timezone = pytz.timezone('Asia/Kolkata')
         # Rate limiting parameters for free tier
         self.min_db_delay = 0.5  # minimum delay in seconds
         self.max_db_delay = 2.0  # maximum delay in seconds
+        
+        # Load models
+        print("[DEBUG] About to load models")
+        self.load_models()
+        print("[DEBUG] Models loaded successfully")
         print("[DEBUG] WeatherPredictor initialization complete")
 
-    def load_models(self):
-        """Load pre-trained models from local directory"""
-        print(f"[DEBUG] Loading models from {self.models_dir}")
+    def download_model(self, filename):
+        """Download a single model from Hugging Face Hub"""
+        print(f"[DEBUG] Downloading model: {filename}")
         try:
+            model_path = hf_hub_download(
+                repo_id=self.hf_repo_id,
+                filename=filename,
+                cache_dir=self.models_dir,
+                local_dir=self.models_dir,
+                local_dir_use_symlinks=False
+            )
+            print(f"[DEBUG] Model downloaded to: {model_path}")
+            return model_path
+        except Exception as e:
+            print(f"[ERROR] Error downloading model {filename}: {e}")
+            print(f"[DEBUG] Stack trace: {traceback.format_exc()}")
+            raise
+
+    def load_models(self):
+        """Load pre-trained models from Hugging Face Hub"""
+        print(f"[DEBUG] Loading models from Hugging Face Hub: {self.hf_repo_id}")
+        try:
+            # List of model files we need
+            model_files = [
+                'temp_model.joblib',
+                'weather_model.joblib',
+                'conditions_model.joblib',
+                'scaler.joblib',
+                'label_encoder.joblib'
+            ]
+            
+            # Download all models (this will cache them locally)
+            print("[DEBUG] Starting model download from Hugging Face Hub")
+            snapshot_download(
+                repo_id=self.hf_repo_id,
+                local_dir=self.models_dir,
+                allow_patterns="*.joblib",
+                local_dir_use_symlinks=False
+            )
+            print("[DEBUG] Model download completed")
+            
+            # Load each model
             print(f"[DEBUG] Loading temp_model from {os.path.join(self.models_dir, 'temp_model.joblib')}")
             self.temp_model = joblib.load(os.path.join(self.models_dir, 'temp_model.joblib'))
             print("[DEBUG] temp_model loaded")
@@ -77,10 +126,6 @@ class WeatherPredictor:
             print("[DEBUG] label_encoder loaded")
             
             print("[DEBUG] All models loaded successfully")
-        except FileNotFoundError as e:
-            print(f"[ERROR] Model loading error: {e}")
-            print(f"[DEBUG] Stack trace: {traceback.format_exc()}")
-            raise
         except Exception as e:
             print(f"[ERROR] Unexpected error loading models: {e}")
             print(f"[DEBUG] Stack trace: {traceback.format_exc()}")
@@ -328,8 +373,8 @@ class WeatherPredictor:
                     'sunset': api_data['sunset'],
                     'min_temp': round(float(daily_temps[date_key]['min_temp']), 1),
                     'max_temp': round(float(daily_temps[date_key]['max_temp']), 1),
-                    'prediction_made_at': current_time.isoformat(),
-                    'prediction_date': date_key  # Add date in YYYY-MM-DD format for easier querying
+                    'prediction_made_at': current_time.isoformat()
+                    # Removed 'prediction_date' since this column doesn't exist in the database
                 }
                 
                 predictions.append(prediction)
@@ -365,7 +410,7 @@ class WeatherPredictor:
         print("[DEBUG] Grouping predictions by date")
         date_groups = {}
         for pred in predictions:
-            # Extract date from datetime
+            # Extract date from datetime field
             pred_date = pred['datetime'].split('T')[0]
             if pred_date not in date_groups:
                 date_groups[pred_date] = []
@@ -374,12 +419,17 @@ class WeatherPredictor:
         return date_groups
 
     def delete_predictions_for_date(self, date):
-        """Delete all predictions for a specific date using date string comparison"""
+        """Delete all predictions for a specific date using datetime string comparison"""
         print(f"[DEBUG] Deleting predictions for date: {date}")
         try:
             self._apply_rate_limiting_delay()
-            # Use simple date string comparison for better compatibility
-            self.supabase.table('weather_predictions').delete().eq('prediction_date', date).execute()
+            # Use datetime field for filtering instead of prediction_date
+            # Convert date to datetime range
+            start_datetime = f"{date}T00:00:00"
+            end_datetime = f"{date}T23:59:59"
+            
+            # Delete predictions between start and end datetime
+            self.supabase.table('weather_predictions').delete().gte('datetime', start_datetime).lte('datetime', end_datetime).execute()
             print(f"[DEBUG] Successfully deleted predictions for date: {date}")
             return True
         except Exception as e:
@@ -506,20 +556,33 @@ class WeatherPredictor:
             return False
 
 def main():
-    """Main function to run the weather prediction service"""
+    """Main function to run the weather prediction service - now with execution timeout"""
     # Configuration
     print("[DEBUG] Starting main function")
+    
+    # Set up timeout (30 minutes = 1800 seconds)
+    timeout_duration = 30 * 60
+    print(f"[DEBUG] Setting up execution timeout of {timeout_duration} seconds (30 minutes)")
+    
+    # Set up the alarm signal handler
+    signal.signal(signal.SIGALRM, timeout_handler)
+    signal.alarm(timeout_duration)
+    
     print("[DEBUG] Reading environment variables")
     
     SUPABASE_URL = os.getenv('SUPABASE_URL')
     SUPABASE_KEY = os.getenv('SUPABASE_KEY')
     API_KEY = os.getenv('API_KEY')
     LOCATION = os.getenv('LOCATION')
+    HF_TOKEN = os.getenv('HF_TOKEN')
+    HF_REPO_ID = os.getenv('HF_REPO_ID', 'abin-varghese/weather_models')
     
     print(f"[DEBUG] Environment variables read - SUPABASE_URL: {'set' if SUPABASE_URL else 'NOT SET'}")
     print(f"[DEBUG] Environment variables read - SUPABASE_KEY: {'set' if SUPABASE_KEY else 'NOT SET'}")
     print(f"[DEBUG] Environment variables read - API_KEY: {'set' if API_KEY else 'NOT SET'}")
     print(f"[DEBUG] Environment variables read - LOCATION: {LOCATION if LOCATION else 'NOT SET'}")
+    print(f"[DEBUG] Environment variables read - HF_TOKEN: {'set' if HF_TOKEN else 'NOT SET'}")
+    print(f"[DEBUG] Environment variables read - HF_REPO_ID: {HF_REPO_ID}")
     
     if not all([SUPABASE_URL, SUPABASE_KEY, API_KEY, LOCATION]):
         print("[ERROR] Missing required environment variables")
@@ -527,47 +590,39 @@ def main():
     
     try:
         print("[DEBUG] Initializing WeatherPredictor")
-        predictor = WeatherPredictor(SUPABASE_URL, SUPABASE_KEY, API_KEY, LOCATION)
+        predictor = WeatherPredictor(SUPABASE_URL, SUPABASE_KEY, API_KEY, LOCATION, hf_repo_id=HF_REPO_ID)
         print("[DEBUG] WeatherPredictor initialized successfully")
         
-        # Variable to track consecutive failures
-        consecutive_failures = 0
-        max_consecutive_failures = 3
+        # Run a single prediction cycle and exit
+        print("[DEBUG] Running prediction cycle")
+        start_time = datetime.now()
+        success = predictor.run_prediction_cycle()
+        end_time = datetime.now()
+        duration = (end_time - start_time).total_seconds()
         
-        while True:
-            print("[DEBUG] Running prediction cycle")
-            start_time = datetime.now()
-            success = predictor.run_prediction_cycle()
-            end_time = datetime.now()
-            duration = (end_time - start_time).total_seconds()
+        if success:
+            print(f"[DEBUG] Prediction cycle completed successfully in {duration:.2f} seconds")
+            print("[DEBUG] Prediction service completed successfully. Exiting now.")
+            # Exit with success code
+            sys.exit(0)
+        else:
+            print("[ERROR] Prediction cycle failed")
+            # Exit with error code
+            sys.exit(1)
             
-            if not success:
-                consecutive_failures += 1
-                print(f"[ERROR] Prediction cycle failed, failure count: {consecutive_failures}")
-                
-                if consecutive_failures >= max_consecutive_failures:
-                    print(f"[ERROR] {consecutive_failures} consecutive failures, increasing wait time")
-                    # Exponential backoff for wait time on consecutive failures
-                    wait_time = min(4 * consecutive_failures, 24)  # Max 24 hours
-                    print(f"[DEBUG] Waiting for {wait_time} hours before next attempt...")
-                    time.sleep(wait_time * 60 * 60)
-                else:
-                    # Short wait before retry
-                    print("[DEBUG] Waiting for 15 minutes before retry...")
-                    time.sleep(15 * 60)
-            else:
-                # Reset failure counter on success
-                consecutive_failures = 0
-                print(f"[DEBUG] Prediction cycle completed in {duration:.2f} seconds")
-                print(f"[DEBUG] Waiting for 4 hours before next prediction cycle....")
-                time.sleep(4 * 60 * 60)
-            
+    except TimeoutError:
+        print(f"\n[ERROR] Execution timed out after {timeout_duration} seconds (30 minutes)")
+        sys.exit(2)
     except KeyboardInterrupt:
         print("\n[DEBUG] Service stopped by user")
+        sys.exit(0)
     except Exception as e:
         print(f"\n[ERROR] Critical error in main loop: {e}")
         print(f"[DEBUG] Stack trace: {traceback.format_exc()}")
-        raise
+        sys.exit(1)
+    finally:
+        # Cancel the alarm
+        signal.alarm(0)
 
 if __name__ == "__main__":
     print("[DEBUG] Script starting")
