@@ -1,35 +1,42 @@
 name: Weather Prediction Service
-
 on:
   push:
     branches:
       - master  # Trigger on push to the master branch
   schedule:
-    - cron: '0 */4 * * *'  # Run every 4 hours
-
+    - cron: '0 */4 * * *'  # Run every 4 hours (fixed the syntax error)
 jobs:
   deploy:
     runs-on: ubuntu-latest
-
     steps:
-      # Checkout the repository with Git LFS
-      - name: Checkout code with Git LFS
+      # Checkout the repository
+      - name: Checkout code
         uses: actions/checkout@v3
-        with:
-          lfs: true  # Enable Git LFS
-
       # Set up Python
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
-          python-version: '3.9'  # Use Python 3.9
-
-      # Install dependencies
+          python-version: '3.9'
+      # Install dependencies including huggingface_hub
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-
+          pip install huggingface-hub
+      # Download models from Hugging Face Hub
+      - name: Download models from Hugging Face
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          python -c "
+          from huggingface_hub import snapshot_download
+          snapshot_download(
+              repo_id='abin-varghese/weather_models',  # Fixed repository ID
+              local_dir='./models',
+              token='$HF_TOKEN',
+              ignore_patterns=['*.md', '*.txt']
+          )
+          "
       # Run the prediction service
       - name: Run Weather Prediction Service
         env:
@@ -37,5 +44,6 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
           API_KEY: ${{ secrets.API_KEY }}
           LOCATION: ${{ secrets.LOCATION }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
           python prediction_service.py
