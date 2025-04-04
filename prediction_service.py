@@ -263,7 +263,8 @@ class WeatherPredictor:
             return None
 
     def predict_hourly(self, sensor_data, api_data):
-        """Make hourly predictions for the next 8 days using sliding window approach"""
+        """Make hourly predictions for the next 8 days using sliding window approach.
+        Using actual sensor data for the current hour."""
         print("[DEBUG] Starting hourly predictions for next 8 days")
         predictions = []
         current_time = datetime.now(self.timezone)
@@ -283,9 +284,59 @@ class WeatherPredictor:
             
             print(f"[DEBUG] Initial conditions - temp: {current_temp}, humidity: {current_humidity}, pressure: {current_pressure}")
             
-            # Predict for next 8 days * 24 hours
-            print(f"[DEBUG] Starting prediction loop for 8 days (192 hours)")
-            for i in range(8 * 24):
+            # First, add entry for current hour with actual sensor data (no prediction)
+            print("[DEBUG] Adding current hour with actual sensor data")
+            date_key = current_time.date().isoformat()
+            
+            # Initialize daily min/max temps with current values
+            if date_key not in daily_temps:
+                daily_temps[date_key] = {
+                    'min_temp': current_temp, 
+                    'max_temp': current_temp
+                }
+            
+            # Determine condition for current hour based on data
+            # Simple condition determination logic (can be improved)
+            condition = "Clear"
+            if current_rain_level > 0:
+                condition = "Rain"
+            elif current_cloudcover > 80:
+                condition = "Cloudy"
+            elif current_cloudcover > 30:
+                condition = "Partly Cloudy"
+            
+            # Calculate wet bulb temperature for current hour
+            wbt = self.calculate_wbt(current_temp, current_humidity)
+            print(f"[DEBUG] Current hour WBT: {wbt}")
+            
+            # Add current hour with actual data
+            current_hour_prediction = {
+                'datetime': current_time.isoformat(),
+                'temp': round(float(current_temp), 1),
+                'temp_max': round(float(current_temp), 1),  # Using current temp as max/min for now
+                'temp_min': round(float(current_temp), 1),
+                'condition': condition,
+                'wind': round(float(current_windspeed), 1),
+                'humidity': round(float(current_humidity), 1),
+                'uvIndex': round(float(current_uv_index), 1),
+                'pressure': round(float(current_pressure), 1),
+                'rainChance': round(float(current_rain_level > 0) * 100, 1),  # Simple rain chance based on current rain
+                'wbt': wbt,
+                'rain_level': round(float(current_rain_level), 1),
+                'wind_direction': round(float(current_winddir), 1),
+                'sunrise': api_data['sunrise'],
+                'sunset': api_data['sunset'],
+                'min_temp': round(float(current_temp), 1),  # Starting with current actual values
+                'max_temp': round(float(current_temp), 1),
+                'prediction_made_at': current_time.isoformat()
+            }
+            
+            predictions.append(current_hour_prediction)
+            print("[DEBUG] Added current hour with actual sensor data")
+            
+            # Now predict for future hours (start from i=1 to skip current hour)
+            print(f"[DEBUG] Starting prediction loop for future hours")
+            for i in range(1, 8 * 24):  # Next 8 days (excluding current hour)
                 if i % 24 == 0:
                     print(f"[DEBUG] Predicting day {i // 24 + 1}")
                 
@@ -374,7 +425,6 @@ class WeatherPredictor:
                     'min_temp': round(float(daily_temps[date_key]['min_temp']), 1),
                     'max_temp': round(float(daily_temps[date_key]['max_temp']), 1),
                     'prediction_made_at': current_time.isoformat()
-                    # Removed 'prediction_date' since this column doesn't exist in the database
                 }
                 
                 predictions.append(prediction)
@@ -397,7 +447,7 @@ class WeatherPredictor:
                 # Randomly adjust wind direction slightly for more realistic predictions
                 current_winddir = (current_winddir + np.random.uniform(-10, 10)) % 360
 
-            print(f"[DEBUG] Completed predictions for all 192 hours")
+            print(f"[DEBUG] Completed predictions for all hours")
             print(f"[DEBUG] Total predictions generated: {len(predictions)}")
             return predictions
         except Exception as e:
