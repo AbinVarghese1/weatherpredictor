@@ -132,34 +132,51 @@ class WeatherPredictor:
             raise
 
     def fetch_current_sensor_data(self):
-        """Fetch latest sensor data from Supabase real-time database"""
-        print("[DEBUG] Fetching current sensor data from Supabase")
+        """
+        Fetch sensor data (temperature, humidity, pressure, uv_index) from Visual Crossing API
+        instead of Supabase database
+        """
+        print("[DEBUG] Fetching current sensor data from Visual Crossing API")
         try:
-            print("[DEBUG] Executing query to fetch sensor data")
-            # Add delay to avoid rate limiting
-            self._apply_rate_limiting_delay()
+            url = f"https://weather.visualcrossing.com/VisualCrossingWebServices/rest/services/timeline/{self.location}/today"
+            params = {
+                'unitGroup': 'metric',
+                'key': self.api_key,
+                'contentType': 'json',
+                'include': 'current'
+            }
             
-            response = self.supabase.table('sensor_data')\
-                .select('*')\
-                .order('created_at', desc=True)\
-                .limit(1)\
-                .execute()
+            print(f"[DEBUG] Making API request to {url}")
+            response = requests.get(url, params=params)
+            print(f"[DEBUG] API response status code: {response.status_code}")
+            response.raise_for_status()
+            data = response.json()
+            print("[DEBUG] API response successfully parsed as JSON")
             
-            print(f"[DEBUG] Query executed, response status: {response.status_code if hasattr(response, 'status_code') else 'unknown'}")
+            current = data.get('currentConditions', {})
+            print(f"[DEBUG] Current conditions from API: {current}")
             
-            if response.data:
-                data = response.data[0]
-                print(f"[DEBUG] Sensor data retrieved: {data}")
-                return {
-                    'temperature': float(data['temperature']),
-                    'humidity': float(data['humidity']),
-                    'pressure': float(data['pressure']),
-                    'uv_index': float(data['uv_index'])
-                }
-            print("[ERROR] No sensor data available")
-            raise Exception("No sensor data available in the database")
+            # Extract the sensor data we need from the API response
+            sensor_data = {
+                'temperature': float(current.get('temp', 25)),
+                'humidity': float(current.get('humidity', 50)),
+                'pressure': float(current.get('pressure', 1013)),
+                'uv_index': float(current.get('uvindex', 5))
+            }
+            
+            print(f"[DEBUG] Sensor data retrieved from API: {sensor_data}")
+            return sensor_data
+            
+        except requests.RequestException as e:
+            print(f"[ERROR] API request failed: {e}")
+            print(f"[DEBUG] Stack trace: {traceback.format_exc()}")
+            raise
+        except ValueError as e:
+            print(f"[ERROR] Error converting API data: {e}")
+            print(f"[DEBUG] Stack trace: {traceback.format_exc()}")
+            raise
         except Exception as e:
-            print(f"[ERROR] Error fetching sensor data: {e}")
+            print(f"[ERROR] Error fetching sensor data from API: {e}")
             print(f"[DEBUG] Stack trace: {traceback.format_exc()}")
             raise
 
@@ -564,7 +581,7 @@ class WeatherPredictor:
         cycle_start_time = datetime.now(self.timezone)
         print(f"[DEBUG] Starting prediction cycle at {cycle_start_time}")
         try:
-            print("[DEBUG] Fetching sensor data...")
+            print("[DEBUG] Fetching sensor data from Visual Crossing API...")
             sensor_data = self.fetch_current_sensor_data()
             print(f"[DEBUG] Sensor data: {sensor_data}")
             
